@@ -1,0 +1,48 @@
+project:
+  type: book
+
+book:
+  title: "Arquitectura de Influencia en Ecosistemas de Consumo"
+  subtitle: "Análisis del Dataset Amazon - MCP"
+  author: "Lu Bjornestad William"
+  date: today
+  chapters:
+    - index.qmd
+    - part: "Bloque I: Análisis de Componentes Principales"
+      chapters:
+        - 01_pca.qmd
+    - part: "Bloque II: Análisis de Redes Sociales"
+      chapters:
+        - 02_sna.qmd
+    - part: "Bloque III: Clasificación Basada en Enlaces"
+      chapters:
+        - 03_link_based.qmd
+    - part: "Anexos"
+      chapters:
+        - 04_prompt_log.qmd
+        - referencias.qmd
+
+bibliography: referencias.bib
+csl: apa.csl
+
+format:
+  html:
+    theme: default
+    mainfont: "Palatino, 'Palatino Linotype', 'Book Antiqua', Georgia, serif"
+    backgroundcolor: "#fffff8"
+    fontcolor: "#111111"
+    fontsize: "1.1em"
+    linestretch: 1.5
+    grid:
+      margin-width: 350px
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    number-sections: true
+    # code-fold: show
+    code-tools: true
+    code-annotations: hover
+    citation-location: document
+
+execute:
+  freeze: auto
