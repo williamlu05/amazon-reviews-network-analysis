@@ -97,7 +97,7 @@ ggplot(df_scores, aes(x = PC1, y = PC2)) +
   theme_minimal(base_family = "serif")
 ```
 
-Los productos con mayor PageRank no se concentran en una zona extrema del biplot ni corresponden a outliers del PCA. Se distribuyen por varios clusters, lo que refuerza la idea de que la centralidad en la red y el perfil atributivo capturan dimensiones distintas.
+Los productos con mayor PageRank no corresponden a outliers del PCA, pero tampoco se reparten al azar: la mayoría se sitúan en valores positivos de PC2 (reseñas largas y de tono variado) y ligeramente positivos de PC1 (opiniones algo más dispersas), dentro del cluster 1, con solo unos pocos en los clusters 2 y 3. Los productos más centrales de la red tienden a ser, por tanto, aquellos que generan reseñas más elaboradas y matizadas, algo que se contrasta formalmente a continuación.
 
 ```{r}
 #| label: kruskal-wallis
