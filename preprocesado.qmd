@@ -84,14 +84,15 @@ calc_rating_entropy <- function(scores) {
 #| label: métricas
 
 amazon_productos <- amazon_df |>
+  mutate(polaridad = calc_polarity(Text)) |> # <1>
   group_by(ProductId) |>
   summarise(
     total_resenas      = n(),
     longitud_media     = mean(nchar(Text)),
     lifespan           = calc_lifespan(Time),
     helpfulness_medio  = mean(calc_helpfulness(HelpfulnessNumerator, HelpfulnessDenominator), na.rm = TRUE),
-    polaridad_media    = mean(calc_polarity(Text), na.rm = TRUE),
-    polaridad_sd       = sd(calc_polarity(Text), na.rm = TRUE),
+    polaridad_media    = mean(polaridad, na.rm = TRUE),
+    polaridad_sd       = sd(polaridad, na.rm = TRUE),
     score_medio        = mean(Score),
     score_sd           = sd(Score),
     score_entropy      = calc_rating_entropy(Score)
@@ -102,10 +103,11 @@ skim(amazon_productos)
 
 write_rds(amazon_productos, "amazon_productos.rds")
 ```
+1. La polaridad se calcula una sola vez por reseña, ya que el análisis de sentimiento es la operación más costosa del preprocesado.
 
 ## Definición de Conexiones entre Productos
 
-Para construir el grafo de co-participación, dos productos se consideran conectados si han sido reseñados por al menos `N_usuarios_iguales` usuarios en común. El umbral N = 5 se ha elegido como punto de partida, en el bloque de SNA se realiza un análisis de sensibilidad que justifica esta elección evaluando su impacto sobre la densidad y la fragmentación del grafo resultante.
+Para construir el grafo de co-participación se consideran únicamente los usuarios activos, aquellos que han reseñado al menos `N_usuarios_iguales` productos distintos, descartando así a los usuarios ocasionales, cuya co-participación es poco informativa. Dos productos quedan conectados si comparten al menos uno de estos usuarios, y el peso de la arista es el número de usuarios activos en común. El umbral N = 5 se ha elegido como punto de partida, y en el bloque de SNA se realiza un análisis de sensibilidad que justifica esta elección evaluando su impacto sobre la densidad y la fragmentación del grafo resultante.
 
 ```{r}
 #| label: construccion-aristas

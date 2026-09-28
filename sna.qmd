@@ -21,7 +21,7 @@ amazon_aristas <- read_rds("amazon_aristas.rds")
 
 ## Construcción del Grafo
 
-Se construye un grafo no dirigido de co-participación a partir de las aristas calculadas en el preprocesado, donde cada arista conecta dos productos reseñados por al menos N = 5 usuarios en común. Se eliminan los nodos aislados y se retiene la componente conexa más grande para evitar artefactos en métricas como closeness.
+Se construye un grafo no dirigido de co-participación a partir de las aristas calculadas en el preprocesado, donde cada arista conecta dos productos reseñados por un mismo usuario activo (con al menos N = 5 productos reseñados), ponderada por el número de estos usuarios que comparten. Se eliminan los nodos aislados y se retiene la componente conexa más grande para evitar artefactos en métricas como closeness.
 
 ```{r}
 #| label: construccion-grafo
@@ -99,7 +99,7 @@ kable(sensibilidad,
   row_spec(which(sensibilidad$N == 5), bold = TRUE, background = "#f0f4ff")
 ```
 
-Con N = 5 se obtiene un grafo con densidad suficientemente baja para que las métricas de centralidad sean discriminativas, manteniendo un número de nodos razonable. Umbrales más bajos generan grafos excesivamente densos, mientras que umbrales más altos eliminan demasiados productos.
+Umbrales bajos incorporan más productos, pero a costa de fragmentar el grafo en más componentes (13 con N = 3), ya que los usuarios ocasionales añaden productos periféricos débilmente conectados. Umbrales altos concentran la red en un núcleo cada vez más denso, pero descartan una gran parte del catálogo (solo 432 productos con N = 10). Con N = 5 se obtiene un compromiso razonable: se conservan unos 1.000 productos, casi todos en una única componente conexa, con una densidad lo bastante baja para que las métricas de centralidad sean discriminativas.
 
 
 ## Métricas de Centralidad
