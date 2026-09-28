@@ -1,0 +1,37 @@
+---
+title: "Introducción"
+format: html
+---
+
+## Contexto y Justificación del Estudio
+
+En la era del comercio electrónico hiperconectado, plataformas como Amazon no operan simplemente como catálogos estáticos de productos, sino como complejos **ecosistemas de consumo**. En estos entornos, las decisiones de compra de los usuarios están fuertemente mediadas por dos fuerzas vectoriales: la reputación explícita de los artículos (expresada en calificaciones y reseñas) y la estructura implícita de asociación (redes de coparticipación y recomendaciones cruzadas).
+
+Este proyecto, desarrollado en el marco de la asignatura *Modelización de Computación Predictiva (MCP)*, aborda el desafío de desenterrar los patrones latentes que gobiernan este ecosistema. Para ello, se analiza un dataset compuesto por 50,000 registros de interacciones históricas, con el objetivo de modelar la **arquitectura de influencia** que determina el éxito, la polarización y el posicionamiento de los productos dentro del mercado digital.
+
+## Objetivos del Proyecto
+
+El marco metodológico de esta investigación se despliega de forma progresiva a través de tres grandes hitos interconectados:
+
+1.  **Reducción de la Dimensionalidad y Caracterización Estructural (Bloque I):** Condensar el espacio multivariante de las métricas de los productos mediante el Análisis de Componentes Principales, aislando los factores que diferencian a los productos de consumo masivo de los artículos de nicho o premium.
+2.  **Modelización de la Topología de Influencia (Bloque II):** Construir y analizar el grafo de relaciones de coparticipación mediante el Análisis de Redes Sociales, identificando comunidades latentes de productos y nodos estructuralmente críticos mediante métricas de centralidad algorítmica.
+3.  **Clasificación Basada en Enlaces y Computación Predictiva (Bloque III):** Implementar modelos de aprendizaje supervisado que aprovechen tanto los atributos intrínsecos del producto como su posición relacional en la red para predecir propiedades críticas del ecosistema.
+
+## Estructura del Dataset
+
+El núcleo empírico del estudio se sustenta sobre variables nativas del dataset, las cuales han sido sometidas a un proceso de extracción de atributos para elevar su valor analítico. Las dimensiones fundamentales agrupadas por producto (`ProductId`) introducidas en este informe son:
+
+-   **Popularidad y Escala:** Medida a través del volumen bruto de reseñas y la puntuación promedio de satisfacción (`Score`).
+-   **Utilidad Percibida (`Helpfulness`):** Ratio derivado matemáticamente entre los votos positivos recibidos por una reseña y el total de interacciones sobre la misma, aislando el sesgo de utilidad.
+-   **Persistencia Temporal (`Lifespan`):** Rango de días transcurridos entre la primera y la última reseña registrada para un producto, mapeando su ciclo de vida activo.
+-   **Complejidad del Consumidor (`Text Length`):** Longitud promedio en caracteres de los textos de las reseñas, asociada en la literatura con la implicación cognitiva del comprador.
+-   **Incertidumbre e Información (Entropía de Shannon):** Aplicación de la medida de entropía informacional sobre la distribución de las calificaciones para cuantificar el grado de consenso o polarización de la comunidad en torno a un producto.
+
+## Mapa de Navegación del Libro
+
+Este documento interactivo ha sido estructurado como un libro de Quarto para facilitar una lectura modular y reproducible. A través de la barra de navegación lateral, el lector puede acceder a las siguientes secciones dinámicas:
+
+-   **Bloque I: Análisis de Componentes Principales:** Estudio de la idoneidad muestral (KMO y Bartlett), ejecución del PCA, criterios de retención de varianza (Kaiser y *Elbow Method*) e interpretación analítica de los componentes.
+-   **Bloque II: Análisis de Redes Sociales:** Extracción del grafo de productos, cálculo de centralidades (Grado, Interintermediación, PageRank) y detección de comunidades mediante particionado algorítmico.
+-   **Bloque III: Clasificación Basada en Enlaces:** Diseño, entrenamiento y evaluación métrica de los clasificadores predictivos combinando atributos geométricos y topológicos.
+-   **Anexo: Diario de Interacción con IA:** Documentación crítica y transparente del proceso de co-creación, depuración de código y mitigación de alucinaciones algorítmicas con modelos de lenguaje.
