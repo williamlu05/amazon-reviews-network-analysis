@@ -1,0 +1,138 @@
+---
+title: "Preprocesado de Datos"
+format: html
+---
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tidytext)
+library(skimr)
+library(data.table)
+library(syuzhet)
+```
+
+## Importación de Datos y Definición de Subconjunto
+
+A continuación importamos el dataset *Amazon Product Reviews* sobre el que se trabajará durante todo el estudio. Dado el tamaño del dataset original (más de 500.000 reseñas), se realiza un muestreo controlado: se seleccionan productos que tengan al menos `min_resenas` reseñas y se acumulan filas hasta alcanzar el límite de `lim_subconjunto`, garantizando variedad mediante un muestreo aleatorio de productos.
+
+```{r}
+#| label: importacion-datos
+#| message: false
+#| echo: false
+
+set.seed(230205)
+amazon_df <- fread("Reviews.csv")
+setDT(amazon_df)
+
+# Hiperparámetros de preprocesado
+lim_subconjunto <- 50000
+min_resenas <- 4
+
+conteo <- amazon_df[, .(n_resenas = .N), by = ProductId][n_resenas >= min_resenas]
+conteo <- conteo[sample(.N)]
+
+conteo[, resenas_acum := cumsum(n_resenas)]
+productos_seleccionados <- conteo[shift(resenas_acum, fill = 0) < lim_subconjunto, ProductId]
+
+amazon_df <- amazon_df[ProductId %in% productos_seleccionados]
+
+write_rds(amazon_df, "amazon_df.rds")
+```
+
+```{r}
+#| label: resumen-estadistico-1
+glimpse(amazon_df)
+```
+
+```{r}
+#| label: resumen-estadistico-2
+skim(amazon_df)
+```
+
+## Resumen de Características de Productos
+
+De cara al análisis posterior, se derivan varias métricas que caractericen cada producto. Aparte de los identificadores de productos y usuarios (que servirán para agrupar datos), las columnas `Summary` y `Text` contienen la reseña resumida y completa respectivamente, proporcionando información subjetiva que métricas como `Score` o `Time` no capturan por sí solas.
+
+```{r}
+#| label: funciones-metricas
+
+calc_helpfulness <- function(numerator, denominator) {
+  ifelse(denominator == 0, NA_real_, numerator / denominator) # <1>
+}
+
+calc_lifespan <- function(Time) {
+  max(Time) - min(Time) # <2>
+}
+
+calc_polarity <- function(texto) {
+  get_sentiment(texto, method = "afinn", language = "english") # <3>
+}
+
+calc_rating_entropy <- function(scores) {
+  p <- table(scores) / length(scores)
+  p <- p[p > 0]
+  -sum(p * log2(p)) # <4>
+}
+```
+
+1.  **Helpfulness**: ratio entre votos útiles y votos totales de la reseña. Si el denominador es 0, que significa que nadie lo ha votado, se devuelve `NA` para evitar divisiones por cero.
+2.  **Lifespan**: diferencia entre la fecha más reciente y la más antigua de las reseñas del producto. Mide la ventana temporal de actividad del producto en la plataforma.
+3.  **Polaridad**: se utiliza el léxico AFINN en `get_sentiment` por su rango amplio (−5 a +5 por palabra), adecuado para captar diferencias de tono en reseñas de productos con opiniones potencialmente polarizadas.
+4.  **Entropía de Shannon**: mide la dispersión de las puntuaciones de un producto. Una entropía alta indica que las valoraciones se distribuyen uniformemente entre todas las estrellas (alta incertidumbre), mientras que una entropía baja indica consenso entre los usuarios.
+
+```{r}
+#| label: métricas
+
+amazon_productos <- amazon_df |>
+  group_by(ProductId) |>
+  summarise(
+    total_resenas      = n(),
+    longitud_media     = mean(nchar(Text)),
+    lifespan           = calc_lifespan(Time),
+    helpfulness_medio  = mean(calc_helpfulness(HelpfulnessNumerator, HelpfulnessDenominator), na.rm = TRUE),
+    polaridad_media    = mean(calc_polarity(Text), na.rm = TRUE),
+    polaridad_sd       = sd(calc_polarity(Text), na.rm = TRUE),
+    score_medio        = mean(Score),
+    score_sd           = sd(Score),
+    score_entropy      = calc_rating_entropy(Score)
+  ) |>
+  mutate(helpfulness_medio = ifelse(is.na(helpfulness_medio), 0, helpfulness_medio))
+
+skim(amazon_productos)
+
+write_rds(amazon_productos, "amazon_productos.rds")
+```
+
+## Definición de Conexiones entre Productos
+
+Para construir el grafo de co-participación, dos productos se consideran conectados si han sido reseñados por al menos `N_usuarios_iguales` usuarios en común. El umbral N = 5 se ha elegido como punto de partida, en el bloque de SNA se realiza un análisis de sensibilidad que justifica esta elección evaluando su impacto sobre la densidad y la fragmentación del grafo resultante.
+
+```{r}
+#| label: construccion-aristas
+
+N_usuarios_iguales <- 5
+
+amazon_aristas <- amazon_df |>
+  group_by(UserId) |>
+  filter(n_distinct(ProductId) >= N_usuarios_iguales) |>
+  summarise(productos = list(unique(ProductId))) |>
+  mutate(pares = map(productos, ~ combn(.x, 2, simplify = FALSE))) |>
+  unnest(pares) |>
+  mutate(
+    from = map_chr(pares, 1),
+    to   = map_chr(pares, 2)
+  ) |>
+  group_by(from, to) |>
+  summarise(peso = n(), .groups = "drop")
+
+write_rds(amazon_aristas, "amazon_aristas.rds")
+```
+
+```{r}
+#| label: nodos-exportar
+
+amazon_nodos <- amazon_productos |>
+  select(ProductId, total_resenas, score_medio, longitud_media, helpfulness_medio, polaridad_media, lifespan)
+
+write_rds(amazon_nodos, "amazon_nodos.rds")
+```
