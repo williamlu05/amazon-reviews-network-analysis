@@ -1,0 +1,307 @@
+---
+title: "Bloque III: Clasificación Basada en Enlaces"
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(igraph)
+library(tidygraph)
+library(knitr)
+library(kableExtra)
+library(pROC)
+
+set.seed(230205)
+
+g_tidy          <- read_rds("g_tidy.rds")
+sna_central     <- read_rds("sna_centralidades.rds")
+pca_clusters    <- read_rds("pca_clusters.rds")
+
+g_base <- as.igraph(g_tidy)
+```
+
+En los bloques anteriores se redujo el espacio de variables con PCA y se modelaron las relaciones entre productos mediante SNA. Este bloque explota la **topología de la red** para dos tareas: clasificación por homofilia y predicción de enlaces.
+
+## Clasificación por Homofilia
+
+La **homofilia** es la tendencia de los nodos a conectarse con nodos similares. Si los productos del mismo cluster PCA tienden a co-participar con los mismos usuarios, la estructura del grafo debería permitir inferir el cluster de un producto a partir de sus vecinos.
+
+Se mide primero la homofilia global mediante el **índice de asortatividad nominal**, que compara la proporción de aristas internas a cada cluster con la esperada bajo asignación aleatoria.
+
+```{r}
+#| label: preparacion-homofilia
+
+nodos_con_cluster <- sna_central |>
+  left_join(pca_clusters, by = "ProductId") |>
+  select(ProductId, community, cluster_pca, pagerank, degree)
+
+cat("Productos con cluster PCA asignado:", sum(!is.na(nodos_con_cluster$cluster_pca)), "\n")
+cat("Productos sin cluster PCA:", sum(is.na(nodos_con_cluster$cluster_pca)), "\n")
+```
+
+```{r}
+#| label: asortatividad
+
+cluster_lookup <- nodos_con_cluster |> select(ProductId, cluster_pca) |> deframe()
+V(g_base)$cluster_pca <- cluster_lookup[V(g_base)$name]
+
+nodos_validos <- which(!is.na(V(g_base)$cluster_pca))
+g_valido      <- induced_subgraph(g_base, nodos_validos)
+
+indice_homofilia <- assortativity_nominal(g_valido,
+                                           types = as.integer(V(g_valido)$cluster_pca),
+                                           directed = FALSE)
+cat("Índice de homofilia (asortatividad nominal):", round(indice_homofilia, 4), "\n")
+```
+
+Un índice positivo pero bajo confirma que la homofilia es débil, es decir, los productos del mismo cluster PCA no tienden a conectarse mucho más de lo esperado por azar.
+
+### Clasificador: voto mayoritario de vecinos
+
+Se enmascara el 20% de los productos, se predice su cluster como la moda de los clusters de sus vecinos en el grafo, y se compara con el valor real. El accuracy se contrasta con un baseline que asigna clusters proporcionalmente a la distribución observada.
+
+```{r}
+#| label: clasificador-vecinos
+
+productos_validos <- nodos_con_cluster |> filter(!is.na(cluster_pca))
+idx_test <- sample(nrow(productos_validos), size = floor(0.2 * nrow(productos_validos)))
+
+productos_train <- productos_validos[-idx_test, ]
+productos_test  <- productos_validos[ idx_test, ]
+
+cluster_train_lookup <- setNames(as.character(productos_train$cluster_pca), productos_train$ProductId)
+
+predict_cluster_vecinos <- function(producto_id, grafo, lookup) {
+  if (!producto_id %in% V(grafo)$name) return(NA_character_)
+  vecinos_ids <- neighbors(grafo, v = which(V(grafo)$name == producto_id))$name
+  clusters_vecinos <- lookup[vecinos_ids]
+  clusters_vecinos <- clusters_vecinos[!is.na(clusters_vecinos)]
+  if (length(clusters_vecinos) == 0) return(NA_character_)
+  names(which.max(table(clusters_vecinos)))
+}
+
+predicciones <- map_chr(productos_test$ProductId,
+                        ~ predict_cluster_vecinos(.x, g_base, cluster_train_lookup))
+
+resultados_clf <- productos_test |>
+  mutate(cluster_predicho = predicciones,
+         correcto = as.character(cluster_pca) == cluster_predicho) |>
+  filter(!is.na(cluster_predicho))
+
+accuracy_modelo <- mean(resultados_clf$correcto, na.rm = TRUE)
+
+dist_clusters <- prop.table(table(productos_train$cluster_pca))
+baseline_pred <- sample(names(dist_clusters), size = nrow(resultados_clf),
+                        replace = TRUE, prob = dist_clusters)
+accuracy_baseline <- mean(baseline_pred == as.character(resultados_clf$cluster_pca), na.rm = TRUE)
+
+tibble(
+  Método    = c("Voto mayoritario de vecinos", "Baseline (aleatorio proporcional)"),
+  Accuracy  = c(round(accuracy_modelo, 4), round(accuracy_baseline, 4)),
+  Productos = c(nrow(resultados_clf), nrow(resultados_clf))
+) |>
+  kable(caption = "Accuracy — clasificación del cluster PCA por posición en la red",
+        align = c("l", "r", "r")) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(1, bold = TRUE, color = "#2c5f8a")
+```
+
+La mejora modesta sobre el baseline y el índice de asortatividad bajo indican que los clusters PCA, que capturan dimensiones como calidad percibida o polaridad, no determinan con quién co-participa un producto. La estructura del grafo está más condicionada por la popularidad o la categoría de producto que por las dimensiones latentes del PCA.
+
+```{r}
+#| label: matriz-confusion
+#| fig-width: 6
+#| fig-height: 5
+
+resultados_clf |>
+  filter(!is.na(cluster_predicho)) |>
+  count(cluster_pca, cluster_predicho) |>
+  mutate(cluster_pca = paste0("Real C", cluster_pca),
+         cluster_predicho = paste0("Predicho C", cluster_predicho)) |>
+  ggplot(aes(x = cluster_predicho, y = fct_rev(cluster_pca), fill = n)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = n), size = 4, fontface = "bold", color = "white") +
+  scale_fill_gradient(low = "#cfe2f3", high = "#2c5f8a", name = "N productos") +
+  labs(title = "Matriz de confusión — clasificador de vecinos",
+       x = "Cluster predicho", y = "Cluster real") +
+  theme_minimal(base_family = "serif") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1), panel.grid = element_blank())
+```
+
+La matriz muestra que el clasificador colapsa hacia el cluster mayoritario, confirmando que la red no transmite la información de los clusters PCA a través de sus aristas.
+
+```{r}
+#| label: exportar-homofilia
+
+write_rds(list(accuracy_modelo = accuracy_modelo, accuracy_baseline = accuracy_baseline,
+               indice_homofilia = indice_homofilia), "enlaces_homofilia.rds")
+```
+
+## Link Prediction
+
+La **predicción de enlaces** estima qué pares de nodos no conectados tienen mayor probabilidad de estarlo. En este contexto, un enlace predicho indica que dos productos comparten una base de usuarios suficientemente similar como para constituir una co-compra latente.
+
+Los scores evaluados son: 
+1. **Common Neighbors**: vecinos compartidos.
+2. **Jaccard**:CN normalizado por la unión de vecindades
+**Adamic-Adar**: pondera inversamente por el logaritmo del grado de los vecinos comunes, dando más peso a vecinos selectivos.
+
+### Partición de aristas y generación de negativos
+
+```{r}
+#| label: particion-aristas
+
+aristas_todas <- as_edgelist(g_base, names = TRUE) |>
+  as_tibble() |> rename(from = V1, to = V2)
+
+idx_test_aristas <- sample(nrow(aristas_todas), size = floor(0.2 * nrow(aristas_todas)))
+aristas_test  <- aristas_todas[ idx_test_aristas, ]
+aristas_train <- aristas_todas[-idx_test_aristas, ]
+
+g_train <- graph_from_data_frame(aristas_train, directed = FALSE,
+                                  vertices = data.frame(name = V(g_base)$name))
+g_train <- delete_vertices(g_train, which(degree(g_train) == 0))
+
+cat("Aristas train:", nrow(aristas_train), "| test:", nrow(aristas_test), "\n")
+```
+
+```{r}
+#| label: negativos
+
+nodos_train <- V(g_train)$name
+
+pares_neg <- tibble(
+  from = sample(nodos_train, nrow(aristas_test) * 2, replace = TRUE),
+  to   = sample(nodos_train, nrow(aristas_test) * 2, replace = TRUE)
+) |>
+  filter(from != to) |>
+  rowwise() |>
+  filter(!are_adjacent(g_base, from, to)) |>
+  ungroup() |>
+  distinct(from, to) |>
+  slice_head(n = nrow(aristas_test))
+```
+
+### Cálculo de scores y evaluación AUC-ROC
+
+```{r}
+#| label: scores-topologicos
+
+calcular_scores <- function(df, grafo) {
+  idx_from <- match(df$from, V(grafo)$name)
+  idx_to   <- match(df$to,   V(grafo)$name)
+  validos <- !is.na(idx_from) & !is.na(idx_to)
+  df <- df[validos, ]; idx_from <- idx_from[validos]; idx_to <- idx_to[validos]
+
+  n <- nrow(df)
+  cn <- jacc <- aa <- numeric(n)
+  grados <- degree(grafo)
+
+  for (i in seq_len(n)) {
+    vecinos_u <- neighbors(grafo, idx_from[i])
+    vecinos_v <- neighbors(grafo, idx_to[i])
+    comunes   <- intersect(vecinos_u, vecinos_v)
+    n_union   <- length(union(vecinos_u, vecinos_v))
+
+    cn[i]   <- length(comunes)
+    jacc[i] <- if (n_union == 0) 0 else length(comunes) / n_union
+    aa[i]   <- if (length(comunes) == 0) 0 else sum(1 / log(grados[comunes] + 1e-9))
+  }
+  df |> mutate(cn = cn, jaccard = jacc, adamic_adar = aa)
+}
+
+eval_df <- bind_rows(
+  aristas_test |> mutate(label = 1L),
+  pares_neg    |> mutate(label = 0L)
+) |> filter(from %in% V(g_train)$name, to %in% V(g_train)$name)
+
+eval_scores <- calcular_scores(eval_df, g_train)
+```
+
+```{r}
+#| label: auc-roc
+
+auc_cn <- auc(roc(eval_scores$label, eval_scores$cn,          quiet = TRUE))
+auc_jc <- auc(roc(eval_scores$label, eval_scores$jaccard,     quiet = TRUE))
+auc_aa <- auc(roc(eval_scores$label, eval_scores$adamic_adar, quiet = TRUE))
+
+resultados_auc <- tibble(
+  Método = c("Common Neighbors", "Jaccard", "Adamic-Adar"),
+  AUC    = round(c(auc_cn, auc_jc, auc_aa), 4),
+  Interpretación = case_when(
+    c(auc_cn, auc_jc, auc_aa) >= 0.80 ~ "Excelente",
+    c(auc_cn, auc_jc, auc_aa) >= 0.70 ~ "Buena",
+    c(auc_cn, auc_jc, auc_aa) >= 0.60 ~ "Moderada",
+    TRUE ~ "Débil"
+  )
+)
+
+resultados_auc |>
+  kable(caption = "AUC-ROC de cada score topológico", align = c("l", "r", "l")) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(which.max(resultados_auc$AUC), bold = TRUE, color = "#2c5f8a")
+```
+
+Los tres scores alcanzan AUC superiores a 0.97, con Adamic-Adar liderando. En grafos de co-participación este resultado es esperable: las aristas eliminadas comparten la misma topología local que las de entrenamiento. Adamic-Adar obtiene una ligera ventaja al penalizar vecinos de alto grado (usuarios que reseñan muchos productos, menos informativos) y privilegiar vecinos selectivos, consistente con la teoría del *Long Tail*.
+
+```{r}
+#| label: curvas-roc
+#| fig-width: 8
+#| fig-height: 5
+
+roc_cn <- roc(eval_scores$label, eval_scores$cn, quiet = TRUE)
+roc_jc <- roc(eval_scores$label, eval_scores$jaccard, quiet = TRUE)
+roc_aa <- roc(eval_scores$label, eval_scores$adamic_adar, quiet = TRUE)
+
+roc_df <- bind_rows(
+  tibble(fpr = 1 - roc_cn$specificities, tpr = roc_cn$sensitivities,
+         método = paste0("Common Neighbors (AUC = ", round(auc_cn, 3), ")")),
+  tibble(fpr = 1 - roc_jc$specificities, tpr = roc_jc$sensitivities,
+         método = paste0("Jaccard (AUC = ", round(auc_jc, 3), ")")),
+  tibble(fpr = 1 - roc_aa$specificities, tpr = roc_aa$sensitivities,
+         método = paste0("Adamic-Adar (AUC = ", round(auc_aa, 3), ")"))
+)
+
+ggplot(roc_df, aes(x = fpr, y = tpr, color = método)) +
+  geom_line(linewidth = 0.9) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray60") +
+  scale_color_manual(values = c("#2c5f8a", "#b5440e", "#3a7d44")) +
+  labs(title = "Curvas ROC — scores de link prediction",
+       x = "Tasa de falsos positivos", y = "Tasa de verdaderos positivos", color = NULL) +
+  theme_minimal(base_family = "serif") +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+#| label: top-pares
+
+mejor_score <- resultados_auc |> slice_max(AUC, n = 1) |> pull(Método)
+col_score <- case_when(mejor_score == "Common Neighbors" ~ "cn",
+                       mejor_score == "Jaccard" ~ "jaccard",
+                       mejor_score == "Adamic-Adar" ~ "adamic_adar")
+
+eval_scores |>
+  filter(label == 0) |>
+  slice_max(order_by = .data[[col_score]], n = 15) |>
+  select(from, to, cn, jaccard, adamic_adar) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
+  kable(col.names = c("Producto A", "Producto B", "CN", "Jaccard", "Adamic-Adar"),
+        caption = paste0("Top 15 pares candidatos a enlace (según ", mejor_score, ")"),
+        align = c("l", "l", "r", "r", "r")) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+## Exportación
+
+```{r}
+#| label: exportar-link-prediction
+
+write_rds(list(
+  auc_cn = as.numeric(auc_cn), auc_jaccard = as.numeric(auc_jc),
+  auc_adamic_adar = as.numeric(auc_aa), mejor_metodo = mejor_score,
+  mejor_auc = max(as.numeric(auc_cn), as.numeric(auc_jc), as.numeric(auc_aa))
+), "enlaces_link_prediction.rds")
+```
