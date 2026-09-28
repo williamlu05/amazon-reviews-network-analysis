@@ -16,6 +16,8 @@ set.seed(230205)
 
 amazon_productos  <- read_rds("amazon_productos.rds")
 pca_clusters      <- read_rds("pca_clusters.rds")
+pca_scores        <- read_rds("pca_scores.rds")
+varianza_pca      <- attr(pca_scores, "varianza_pct")
 sna_centralidades <- read_rds("sna_centralidades.rds")
 homofilia         <- read_rds("enlaces_homofilia.rds")
 link_pred         <- read_rds("enlaces_link_prediction.rds")
@@ -77,20 +79,7 @@ Un ARI próximo a 0 confirma que los clusters PCA y las comunidades Louvain **no
 ```{r}
 #| label: biplot-pagerank
 
-amazon_numeric <- amazon_productos |>
-  select(-ProductId) |>
-  mutate(across(where(is.numeric), ~ {
-    q <- quantile(.x, c(0.25, 0.75), na.rm = TRUE)
-    iqr <- q[2] - q[1]
-    pmax(pmin(.x, q[2] + 1.5 * iqr), q[1] - 1.5 * iqr)
-  }))
-
-pca_recalc <- prcomp(amazon_numeric, center = TRUE, scale. = TRUE)
-
-df_scores <- data.frame(
-  ProductId = amazon_productos$ProductId,
-  PC1 = pca_recalc$x[, 1], PC2 = pca_recalc$x[, 2]
-) |>
+df_scores <- pca_scores |>
   left_join(sna_centralidades, by = "ProductId") |>
   left_join(pca_clusters, by = "ProductId") |>
   drop_na(pagerank)
@@ -103,8 +92,8 @@ ggplot(df_scores, aes(x = PC1, y = PC2)) +
   scale_color_brewer(palette = "Set2", name = "Cluster PCA") +
   labs(title = "Biplot PC1–PC2: productos con mayor PageRank",
        subtitle = "Triángulos rojos = top 20 por PageRank",
-       x = paste0("PC1 (", round(summary(pca_recalc)$importance[2, 1] * 100, 1), "%)"),
-       y = paste0("PC2 (", round(summary(pca_recalc)$importance[2, 2] * 100, 1), "%)")) +
+       x = paste0("PC1 (", varianza_pca[1], "%)"),
+       y = paste0("PC2 (", varianza_pca[2], "%)")) +
   theme_minimal(base_family = "serif")
 ```
 
@@ -120,7 +109,7 @@ for (m in c("pagerank", "betweenness", "degree")) {
 }
 ```
 
-Si algún p-valor es inferior a 0.05, el cluster PCA sí predice diferencias de centralidad. Eso significaría que, aunque las agrupaciones no sean equivalentes (ARI ≈ 0), algunos perfiles comerciales se traducen en posiciones estructuralmente distintas dentro de la red.
+Los tres p-valores son inferiores a 0.05, por lo que el cluster PCA sí predice diferencias en la distribución de la centralidad. Es decir, aunque las agrupaciones no sean equivalentes (ARI ≈ 0), algunos perfiles comerciales se traducen en posiciones estructuralmente distintas dentro de la red: el perfil atributivo no determina *con quién* se conecta un producto, pero sí influye en *cuánto* se conecta.
 
 ## Resumen Integrado
 
@@ -128,14 +117,14 @@ Si algún p-valor es inferior a 0.05, el cluster PCA sí predice diferencias de 
 #| label: tabla-resumen
 
 tibble(
-  Bloque  = c("Preprocesado", "PCA", "PCA", "SNA", "SNA", "SNA",
+  Bloque  = c("Preprocesado", "PCA", "PCA", "SNA", "PCA × SNA", "Enlaces — Homofilia",
               "Enlaces — Homofilia", "Enlaces — Homofilia",
               "Enlaces — Link Prediction", "Enlaces — Link Prediction"),
   Métrica = c("Productos en el análisis", "Varianza retenida (3 CP)", "Clusters k-means",
               "Comunidades Louvain", "ARI (PCA vs Louvain)", "Índice asortatividad",
               "Accuracy modelo", "Accuracy baseline",
               paste0("AUC mejor (", link_pred$mejor_metodo, ")"), "AUC Common Neighbors"),
-  Valor   = c(nrow(df_maestro), "79,2 %", "4",
+  Valor   = c(nrow(df_maestro), paste0(sum(varianza_pca), " %"), n_distinct(pca_clusters$cluster_pca),
               n_distinct(df_maestro$community), round(ari_valor, 4), round(homofilia$indice_homofilia, 4),
               round(homofilia$accuracy_modelo, 4), round(homofilia$accuracy_baseline, 4),
               round(link_pred$mejor_auc, 4), round(link_pred$auc_cn, 4))
@@ -149,7 +138,7 @@ tibble(
 
 El proyecto ha explorado el catálogo de Amazon desde dos ángulos complementarios.
 
-La **perspectiva atributiva (PCA)** segmenta los productos según lo que *son*: valoración media, dispersión de opiniones, volumen y longitud de reseñas. Los cuatro clusters reflejan arquetipos comerciales (productos de nicho bien valorados, productos de gran volumen con calidad heterogénea, etc.), útiles para políticas de producto o pricing.
+La **perspectiva atributiva (PCA)** segmenta los productos según lo que *son*: valoración media, dispersión de opiniones, volumen y longitud de reseñas. Los tres clusters reflejan arquetipos comerciales (productos de nicho bien valorados, productos de gran volumen con calidad heterogénea, etc.), útiles para políticas de producto o pricing.
 
 La **perspectiva relacional (SNA)** segmenta según *con quién conviven* en la cesta de compra. Las comunidades Louvain agrupan productos que comparten audiencia, no necesariamente perfil de valoración. Esta perspectiva es la base natural de un sistema de recomendación.
 
