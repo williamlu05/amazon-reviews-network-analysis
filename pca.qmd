@@ -1,0 +1,206 @@
+---
+title: "Bloque I: Análisis de Componentes Principales"
+format: html
+---
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(factoextra)
+library(corrplot)
+library(psych)
+set.seed(230205)
+
+amazon_df       <- read_rds("amazon_df.rds")
+amazon_productos <- read_rds("amazon_productos.rds")
+```
+
+## Análisis Exploratorio y Adecuación Muestral
+
+El Análisis de Componentes Principales (PCA) transforma un conjunto de variables correlacionadas en componentes ortogonales ordenadas por varianza explicada. Antes de ejecutarlo es necesario verificar que existe suficiente estructura correlacional en los datos.
+
+### Matriz de correlaciones
+
+```{r}
+#| label: pca-correlacion
+#| warning: false
+
+amazon_numeric <- amazon_productos |> select(-ProductId)
+
+cor(amazon_numeric) |> 
+  corrplot(method = "number",
+           type = "upper",
+           col = colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))(200))
+```
+
+La matriz revela una correlación negativa fuerte entre `score_medio` y `score_entropy` (−0.71): los productos con puntuaciones altas tienden a generar distribuciones de votos menos dispersas. Por su parte, `longitud_media` y las métricas de polaridad muestran covarianza positiva, sugiriendo que las reseñas más largas suelen ser más polarizadas en tono.
+
+### Tests de Bartlett y KMO
+
+```{r}
+#| label: pca-tests
+
+cortest.bartlett(cor(amazon_numeric), n = nrow(amazon_numeric))
+
+KMO(amazon_numeric)
+```
+
+El **test de esfericidad de Bartlett** contrasta la hipótesis nula de que la matriz de correlaciones es la identidad. Con p-valor ≈ 0, se rechaza con total seguridad, dado que existe correlación significativa entre las variables y el PCA tiene sentido estadístico.
+
+El **índice KMO** mide en qué medida las correlaciones observadas pueden explicarse por factores comunes, con valores entre 0 y 1. El KMO global de **0.71** normalmente se considera un valor aceptable. Las variables `helpfulness_medio` (0.81), `score_medio` (0.73) y `score_entropy` (0.76) presentan los valores más altos. Las variables `total_resenas` (0.44) y `lifespan` (0.45) son más bajas, lo que es esperable dado que captan menos la opinión del usuario; se mantienen en el análisis pero conviene tenerlo en cuenta.
+
+## Tratamiento de Outliers y PCA
+
+### Winsorización por IQR
+
+```{r}
+#| label: pca-outliers
+#| fig-height: 8
+
+amazon_productos |>
+  select(-ProductId) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "valor") |>
+  ggplot(aes(x = variable, y = valor)) +
+  geom_boxplot() +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Distribución original de las variables") +
+  theme(axis.text.x = element_blank())
+
+winsorize_iqr <- function(x) {
+  q1  <- quantile(x, 0.25, na.rm = TRUE)
+  q3  <- quantile(x, 0.75, na.rm = TRUE)
+  iqr <- q3 - q1
+  pmax(pmin(x, q3 + 1.5 * iqr), q1 - 1.5 * iqr)
+}
+
+amazon_numeric <- amazon_numeric |>
+  mutate(
+    total_resenas = log1p(total_resenas),
+    lifespan      = log1p(lifespan)
+  ) |>
+  select(-total_resenas, -lifespan) |> 
+  mutate(across(everything(), winsorize_iqr))
+
+amazon_numeric |>
+  pivot_longer(everything(), names_to = "variable", values_to = "valor") |>
+  ggplot(aes(x = variable, y = valor)) +
+  geom_boxplot() +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Distribución tras transformación logarítmica y winsorización") +
+  theme(axis.text.x = element_blank())
+```
+
+Los boxplots originales muestran outliers severos en `total_resenas` y `lifespan`, además de unos cuantos en las métricas de polaridad y de longitud media . Dado que el PCA maximiza la varianza, estos valores distorsionarían las componentes. Para combatir con ello, se aplica la  transformación logarítmica a las métricas `total_resenas` y `lifespan` a estas dos variables y **winsorización por IQR** al resto: los valores fuera de `[Q1 − 1.5·IQR, Q3 + 1.5·IQR]` se recortan a los límites, manteniendo cierta magnitud de los extremos sin que dominen el análisis.
+
+### Ejecución del PCA y Scree Plot
+
+```{r}
+#| label: pca-ejecucion
+
+pca_amazon <- prcomp(amazon_numeric, center = TRUE, scale = TRUE) # <1>
+
+fviz_eig(pca_amazon, 
+         addlabels = TRUE, 
+         ylim = c(0, 80), 
+         title = "Scree Plot: Varianza Explicada por Componente")
+```
+1. La estandarización incluida en los parámetros del pca es imprescindible cuando las variables tienen unidades y escalas diferentes.
+
+El **Scree Plot** muestra un codo pronunciado tras la tercera componente: PC1 explica el 40.1%, PC2 el 25.7% y PC3 el 13.4%. A partir de PC4 la curva se aplana.
+
+### Selección de componentes: criterio de Kaiser
+
+```{r}
+#| label: pca-kaiser
+
+autovalores <- pca_amazon$sdev^2
+componentes <- data.frame(
+  componente = paste0("PC", seq_along(autovalores)),
+  autovalor  = round(autovalores, 3),
+  varianza_pct = round(autovalores / sum(autovalores) * 100, 1),
+  varianza_acum = round(cumsum(autovalores) / sum(autovalores) * 100, 1)
+)
+componentes
+```
+
+El **criterio de Kaiser** establece retener las componentes con autovalor superior a 1, ya que un autovalor de 1 equivale a la varianza de una variable estandarizada. El criterio selecciona las dos primeras (65.9% de varianza acumulada), pero dada la diferencia apreciable entre PC3 y las restantes, se incluyen las **tres primeras componentes** con un 79.2% de varianza retenida — una retención buena con solo un tercio de las variables originales.
+
+## Interpretación de las Componentes
+
+```{r}
+#| label: pca-contribuciones
+
+pca_amazon$rotation[, 1:3] |>
+  as.data.frame() |>
+  rownames_to_column("Variable") |>
+  knitr::kable(digits = 3, caption = "Cargas de cada variable en las tres primeras componentes")
+
+fviz_pca_var(pca_amazon, 
+             col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE, 
+             title = "Variables y sus contribuciones en el Ecosistema Amazon")
+```
+
+La tabla de cargas permite interpretar qué mide cada componente:
+
+- **PC1** recibe contribuciones altas de `score_medio`, `score_sd`, `score_entropy` y `polaridad_media`. Separa productos de alta satisfacción y consenso (cargas positivas/negativas opuestas entre score y entropy) de productos con opiniones dispares. Podría interpretarse como un eje de **calidad percibida**.
+- **PC2** está dominada por `longitud_media` y `helpfulness_medio`. Distingue productos cuyas reseñas son extensas y valoradas como útiles frente a productos con reseñas breves. Representa el **grado de elaboración de las reseñas**.
+- **PC3** captura, casi por completo en comparación con las otras variables, el **helpfulness de las reseñas**, por lo que prioriza la disiponibilidad de las personas de criticar positivamente el producto.
+
+### Verificación de ortogonalidad
+
+```{r}
+#| label: pca-ortogonalidad
+
+cor(pca_amazon$x) |>
+  corrplot(method = "number", type = "upper",
+           title = "Correlación entre Componentes Principales")
+```
+
+Las correlaciones entre scores son 0 (salvo errores de redondeo numérico), confirmando que cada componente captura una dimensión genuinamente distinta.
+
+## Biplot y Clustering
+
+```{r}
+#| label: pca-clusters
+
+set.seed(230205)
+k_optimo <- 3  # <1>
+clusters_pca <- kmeans(pca_amazon$x[, 1:3], centers = k_optimo)
+pca_clusters <- data.frame(
+  ProductId = amazon_productos$ProductId,
+  cluster_pca = as.factor(clusters_pca$cluster)
+)
+write_rds(pca_clusters, "pca_clusters.rds")
+```
+1. El valor de `k` se selecciona a partir del gráfico del codo: el punto donde la reducción de la suma de cuadrados intra-cluster deja de ser sustancial.
+
+```{r}
+#| label: pca-biplot
+#| fig-width: 9
+#| fig-height: 7
+#| warning: false
+
+fviz_pca_biplot(pca_amazon,
+                geom.ind  = "point",
+                pointsize = 1.2,
+                alpha.ind = 0.3,
+                col.ind   = pca_clusters$cluster_pca,
+                palette   = c("#9ecae1", "#fdae6b", "#a1d99b", "#c9a0dc"),
+                addEllipses    = TRUE,
+                ellipse.level  = 0.95,
+                ellipse.type   = "confidence",
+                col.var   = "black",
+                repel     = TRUE,
+                legend.title = "Cluster PCA",
+                title = "Biplot de Productos de Amazon")
+```
+
+Para poder cruzar los resultados del PCA con el análisis SNA, se aplica un k-means sobre los scores de las tres primeras componentes. Se utiliza el **método del codo** para determinar el número óptimo de clusters.
+
+```{r}
+#| label: pca-codo
+
+fviz_nbclust(pca_amazon$x[, 1:3], kmeans, method = "wss") +
+  labs(title = "Método del codo para selección de k")
+```
