@@ -1,0 +1,159 @@
+---
+title: "Conclusiones"
+format: html
+---
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(ggraph)
+library(tidygraph)
+library(igraph)
+library(aricode)
+
+set.seed(230205)
+
+amazon_productos  <- read_rds("amazon_productos.rds")
+pca_clusters      <- read_rds("pca_clusters.rds")
+sna_centralidades <- read_rds("sna_centralidades.rds")
+homofilia         <- read_rds("enlaces_homofilia.rds")
+link_pred         <- read_rds("enlaces_link_prediction.rds")
+
+df_maestro <- amazon_productos |>
+  left_join(pca_clusters,      by = "ProductId") |>
+  left_join(sna_centralidades, by = "ProductId") |>
+  drop_na(cluster_pca, community)
+
+cat("Productos con datos completos de los tres bloques:", nrow(df_maestro), "\n")
+```
+
+## Validación Cruzada de Métodos
+
+El objetivo de esta sección es responder la pregunta central: ¿las tres perspectivas  de atributos numéricos (PCA), estructura de red (SNA) y topología predictiva (Bloque III)  capturan las mismas dimensiones del ecosistema, o son complementarias?
+
+### Concordancia PCA vs Louvain
+
+```{r}
+#| label: tabla-contingencia
+
+tab_cont <- table(`Cluster PCA` = df_maestro$cluster_pca,
+                   `Comunidad Louvain` = df_maestro$community)
+
+tab_cont |>
+  kable(caption = "Tabla de contingencia: Cluster PCA × Comunidad Louvain") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+```{r}
+#| label: ari
+
+ari_valor <- ARI(as.integer(df_maestro$cluster_pca),
+                 as.integer(as.factor(df_maestro$community)))
+cat("Adjusted Rand Index (PCA vs Louvain):", round(ari_valor, 4), "\n")
+```
+
+```{r}
+#| label: heatmap-contingencia
+
+df_maestro |>
+  count(cluster_pca, community) |>
+  mutate(cluster_pca = paste0("C", cluster_pca), community = paste0("Com. ", community)) |>
+  ggplot(aes(x = community, y = fct_rev(cluster_pca), fill = n)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = n), size = 3.5, fontface = "bold", color = "white") +
+  scale_fill_gradient(low = "#cfe2f3", high = "#1d3c5e", name = "N productos") +
+  labs(title = "Distribución de productos: Cluster PCA × Comunidad Louvain",
+       subtitle = "Un ARI próximo a 0 indica complementariedad entre ambas agrupaciones",
+       x = "Comunidad Louvain", y = "Cluster PCA") +
+  theme_minimal(base_family = "serif") +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1), panel.grid = element_blank())
+```
+
+Un ARI próximo a 0 confirma que los clusters PCA y las comunidades Louvain **no coinciden**: el PCA segmenta por perfil comercial (valoración, volumen, polaridad), mientras que Louvain agrupa por hábitos de consumo compartidos (audiencia solapada).
+
+### Centralidad de red por cluster PCA
+
+```{r}
+#| label: biplot-pagerank
+
+amazon_numeric <- amazon_productos |>
+  select(-ProductId) |>
+  mutate(across(where(is.numeric), ~ {
+    q <- quantile(.x, c(0.25, 0.75), na.rm = TRUE)
+    iqr <- q[2] - q[1]
+    pmax(pmin(.x, q[2] + 1.5 * iqr), q[1] - 1.5 * iqr)
+  }))
+
+pca_recalc <- prcomp(amazon_numeric, center = TRUE, scale. = TRUE)
+
+df_scores <- data.frame(
+  ProductId = amazon_productos$ProductId,
+  PC1 = pca_recalc$x[, 1], PC2 = pca_recalc$x[, 2]
+) |>
+  left_join(sna_centralidades, by = "ProductId") |>
+  left_join(pca_clusters, by = "ProductId") |>
+  drop_na(pagerank)
+
+top_pagerank <- df_scores |> slice_max(pagerank, n = 20)
+
+ggplot(df_scores, aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = cluster_pca), alpha = 0.3, size = 1.2) +
+  geom_point(data = top_pagerank, color = "#c0392b", shape = 17, size = 3.5, alpha = 0.9) +
+  scale_color_brewer(palette = "Set2", name = "Cluster PCA") +
+  labs(title = "Biplot PC1–PC2: productos con mayor PageRank",
+       subtitle = "Triángulos rojos = top 20 por PageRank",
+       x = paste0("PC1 (", round(summary(pca_recalc)$importance[2, 1] * 100, 1), "%)"),
+       y = paste0("PC2 (", round(summary(pca_recalc)$importance[2, 2] * 100, 1), "%)")) +
+  theme_minimal(base_family = "serif")
+```
+
+Los productos con mayor PageRank no se concentran en una zona extrema del biplot ni corresponden a outliers del PCA. Se distribuyen por varios clusters, lo que refuerza la idea de que la centralidad en la red y el perfil atributivo capturan dimensiones distintas.
+
+```{r}
+#| label: kruskal-wallis
+
+for (m in c("pagerank", "betweenness", "degree")) {
+  kw <- kruskal.test(reformulate("cluster_pca", response = m), data = df_maestro)
+  cat(sprintf("Kruskal-Wallis %-14s  χ²(%.0f) = %6.3f  p = %.4f\n",
+              m, kw$parameter, kw$statistic, kw$p.value))
+}
+```
+
+Si algún p-valor es inferior a 0.05, el cluster PCA sí predice diferencias de centralidad. Eso significaría que, aunque las agrupaciones no sean equivalentes (ARI ≈ 0), algunos perfiles comerciales se traducen en posiciones estructuralmente distintas dentro de la red.
+
+## Resumen Integrado
+
+```{r}
+#| label: tabla-resumen
+
+tibble(
+  Bloque  = c("Preprocesado", "PCA", "PCA", "SNA", "SNA", "SNA",
+              "Enlaces — Homofilia", "Enlaces — Homofilia",
+              "Enlaces — Link Prediction", "Enlaces — Link Prediction"),
+  Métrica = c("Productos en el análisis", "Varianza retenida (3 CP)", "Clusters k-means",
+              "Comunidades Louvain", "ARI (PCA vs Louvain)", "Índice asortatividad",
+              "Accuracy modelo", "Accuracy baseline",
+              paste0("AUC mejor (", link_pred$mejor_metodo, ")"), "AUC Common Neighbors"),
+  Valor   = c(nrow(df_maestro), "79,2 %", "4",
+              n_distinct(df_maestro$community), round(ari_valor, 4), round(homofilia$indice_homofilia, 4),
+              round(homofilia$accuracy_modelo, 4), round(homofilia$accuracy_baseline, 4),
+              round(link_pred$mejor_auc, 4), round(link_pred$auc_cn, 4))
+) |>
+  kable(col.names = c("Bloque", "Métrica", "Valor"),
+        caption = "Resumen de métricas de los tres bloques") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+## Extrapolaciones 
+
+El proyecto ha explorado el catálogo de Amazon desde dos ángulos complementarios.
+
+La **perspectiva atributiva (PCA)** segmenta los productos según lo que *son*: valoración media, dispersión de opiniones, volumen y longitud de reseñas. Los cuatro clusters reflejan arquetipos comerciales (productos de nicho bien valorados, productos de gran volumen con calidad heterogénea, etc.), útiles para políticas de producto o pricing.
+
+La **perspectiva relacional (SNA)** segmenta según *con quién conviven* en la cesta de compra. Las comunidades Louvain agrupan productos que comparten audiencia, no necesariamente perfil de valoración. Esta perspectiva es la base natural de un sistema de recomendación.
+
+El bajo ARI y el índice de asortatividad próximo a cero son el resultado más revelador: **las dos segmentaciones son ortogonales**. Un sistema de recomendación que combine ambas — filtrando por perfil atributivo y refinando por vecindad estructural — aportaría más valor que cualquiera por separado. El alto AUC del link prediction (> 0.97) demuestra que la red ya contiene información suficiente para anticipar co-compras latentes, constituyendo el embrión de un motor de recomendación operativo.
+
+
+En definitiva, el análisis del dataset de reseñas de Amazon revela que la calidad percibida de un producto, medida por su puntuación, polaridad y elaboración de las reseña, opera en un plano completamente independiente de los patrones de consumo reales de los usuarios. Productos con perfiles de valoración muy distintos pueden compartir exactamente la misma base de compradores, y viceversa: productos con reseñas casi idénticas en tono y volumen pueden pertenecer a ecosistemas de consumo que nunca se cruzan. Esta desconexión implica que las reseñas, por sí solas, son un indicador limitado del comportamiento de compra, ya que describen más bien la experiencia individual del usuario con el producto, pero no predicen con quién compite ni junto a qué otros productos se adquiere. Sin embargo, cuando se combinan ambas perspectivas de los resultados de PCA y SNA, se puede llegar a una comprensión más completa del catálogo que ofrecería cualquiera de las dos por separado.
