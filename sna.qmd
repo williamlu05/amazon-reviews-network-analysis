@@ -1,0 +1,437 @@
+---
+title: "Bloque II: Análisis de Redes Sociales"
+format: html
+---
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(igraph)
+library(tidygraph)
+library(ggraph)
+library(knitr)
+library(kableExtra)
+library(cowplot)
+
+set.seed(230205)
+
+amazon_df      <- read_rds("amazon_df.rds")
+amazon_nodos   <- read_rds("amazon_nodos.rds")
+amazon_aristas <- read_rds("amazon_aristas.rds")
+```
+
+## Construcción del Grafo
+
+Se construye un grafo no dirigido de co-participación a partir de las aristas calculadas en el preprocesado, donde cada arista conecta dos productos reseñados por al menos N = 5 usuarios en común. Se eliminan los nodos aislados y se retiene la componente conexa más grande para evitar artefactos en métricas como closeness.
+
+```{r}
+#| label: construccion-grafo
+
+g_base <- graph_from_data_frame(
+  d        = amazon_aristas,
+  directed = FALSE,
+  vertices = amazon_nodos |> rename(name = ProductId)
+)
+
+# Eliminar nodos aislados (sin aristas tras el filtrado)
+g_base <- delete_vertices(g_base, which(degree(g_base) == 0))
+
+cat("Nodos (productos con conexiones):", vcount(g_base), "\n")
+cat("Aristas (co-participación):", ecount(g_base), "\n")
+cat("Densidad del grafo:", round(edge_density(g_base), 5), "\n")
+cat("Componentes conexas:", components(g_base)$no, "\n")
+```
+
+```{r}
+#| label: componente-mas-grande
+
+# Retener solo la componente más grande para evitar artefactos en métricas como closeness
+comp <- components(g_base)
+cat("Tamaños de las componentes:", sort(comp$csize, decreasing = TRUE), "\n")
+
+g_base <- induced_subgraph(g_base, which(comp$membership == which.max(comp$csize)))
+
+cat("Nodos en mayor componente:", vcount(g_base), "\n")
+cat("Aristas:", ecount(g_base), "\n")
+```
+
+### Análisis de Sensibilidad del Umbral N
+
+Para justificar la elección del umbral N = 5, se evalúa cómo varía la estructura del grafo con distintos valores. Se busca un equilibrio entre mantener suficientes nodos para un análisis significativo y reducir la densidad para evitar un grafo trivialmente completo.
+
+
+```{r}
+#| label: sensibilidad-umbral
+
+umbrales <- c(3, 4, 5, 6, 8, 10)
+
+sensibilidad <- map_dfr(umbrales, function(n) {
+  aristas_n <- amazon_df |>
+    group_by(UserId) |>
+    filter(n_distinct(ProductId) >= n) |>
+    summarise(productos = list(unique(ProductId)), .groups = "drop") |>
+    mutate(pares = map(productos, ~ combn(.x, 2, simplify = FALSE))) |>
+    unnest(pares) |>
+    mutate(from = map_chr(pares, 1), to = map_chr(pares, 2)) |>
+    group_by(from, to) |>
+    summarise(peso = n(), .groups = "drop")
+
+  if (nrow(aristas_n) == 0) return(NULL)
+
+  g_n <- graph_from_data_frame(aristas_n, directed = FALSE,
+                                vertices = amazon_nodos |> rename(name = ProductId))
+  g_n <- delete_vertices(g_n, which(degree(g_n) == 0))
+
+  tibble(
+    N            = n,
+    nodos        = vcount(g_n),
+    aristas      = ecount(g_n),
+    densidad     = round(edge_density(g_n), 5),
+    componentes  = components(g_n)$no
+  )
+})
+
+kable(sensibilidad,
+      col.names = c("Umbral N", "Nodos", "Aristas", "Densidad", "Componentes"),
+      caption   = "Efecto del umbral N sobre la estructura del grafo de co-participación",
+      align     = "r") |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  row_spec(which(sensibilidad$N == 5), bold = TRUE, background = "#f0f4ff")
+```
+
+Con N = 5 se obtiene un grafo con densidad suficientemente baja para que las métricas de centralidad sean discriminativas, manteniendo un número de nodos razonable. Umbrales más bajos generan grafos excesivamente densos, mientras que umbrales más altos eliminan demasiados productos.
+
+
+## Métricas de Centralidad
+
+```{r}
+#| label: centralidad
+
+g_tidy <- as_tbl_graph(g_base) |>
+  activate(nodes) |>
+  mutate(
+    degree      = centrality_degree(),
+    betweenness = centrality_betweenness(normalized = TRUE),
+    pagerank    = centrality_pagerank(),
+    closeness   = centrality_closeness(normalized = TRUE),
+    coreness    = node_coreness()
+  )
+
+centralidad_df <- g_tidy |>
+  as_tibble() |>
+  arrange(desc(pagerank))
+
+# Top 15 por PageRank
+centralidad_df |>
+  slice_max(pagerank, n = 15) |>
+  mutate(across(where(is.numeric), ~ round(.x, 4))) |>
+  select(name, degree, betweenness, pagerank, closeness) |>
+  kable(
+    col.names = c("ProductId", "Degree", "Betweenness", "PageRank", "Closeness"),
+    caption   = "Top 15 productos por PageRank — Productos 'faro' del ecosistema",
+    align     = c("l", "r", "r", "r", "r")
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = FALSE) |>
+  column_spec(4, bold = TRUE, color = "#2c5f8a")
+```
+
+Los valores de PageRank observados son pequeños en términos absolutos, con los mayores valores siendo menores que 0.01, pero es coherente con el funcionamiento del algoritmo: PageRank distribuye una unidad de probabilidad total entre todos los nodos del grafo, de modo que redes grandes pertenecerá una pequeña parte a cada producto. Lo relevante no es la magnitud absoluta sino el ranking relativo, la conexión entre qué productos, y la importancia de ellos. 
+
+
+### Distribución de Centralidades
+
+```{r}
+#| label: distribucion-centralidades
+#| fig-width: 10
+#| fig-height: 4
+#| warning: false
+
+p_degree <- ggplot(centralidad_df, aes(x = degree)) +
+  geom_histogram(bins = 40, fill = "#2c5f8a", alpha = 0.85, color = "white", linewidth = 0.2) +
+  scale_x_log10() +
+  labs(title = "Distribución de Grado", subtitle = "Escala logarítmica",
+       x = "Degree (log)", y = "Frecuencia") +
+  theme_minimal(base_family = "serif") +
+  theme(plot.title = element_text(face = "bold", size = 11))
+
+p_pagerank <- ggplot(centralidad_df, aes(x = pagerank)) +
+  geom_histogram(bins = 40, fill = "#b5440e", alpha = 0.85, color = "white", linewidth = 0.2) +
+  scale_x_log10() +
+  labs(title = "Distribución de PageRank", subtitle = "Escala logarítmica",
+       x = "PageRank (log)", y = "Frecuencia") +
+  theme_minimal(base_family = "serif") +
+  theme(plot.title = element_text(face = "bold", size = 11))
+
+p_between <- ggplot(centralidad_df, aes(x = betweenness)) +
+  geom_histogram(bins = 40, fill = "#3a7d44", alpha = 0.85, color = "white", linewidth = 0.2) +
+  scale_x_log10() +
+  labs(title = "Distribución de Betweenness", subtitle = "Escala logarítmica",
+       x = "Betweenness normalizado (log)", y = "Frecuencia") +
+  theme_minimal(base_family = "serif") +
+  theme(plot.title = element_text(face = "bold", size = 11))
+
+cowplot::plot_grid(p_degree, p_pagerank, p_between, nrow = 1)
+```
+
+Las tres distribuciones presentan una cola larga hacia la derecha (escala logarítmica), característica de redes *scale-free*: la mayoría de productos tienen pocas conexiones, pero un pequeño grupo de productos "faro" concentra una centralidad desproporcionada.
+
+## Estructura Global de la Red
+
+```{r}
+#| label: estructura-global
+
+diametro    <- diameter(g_base)
+dist_media  <- mean_distance(g_base)
+clustering_global <- transitivity(g_base, type = "global")
+clustering_local  <- mean(transitivity(g_base, type = "local"), na.rm = TRUE)
+
+tribble(
+  ~Métrica,                                ~Valor,
+  "Diámetro",                              diametro,
+  "Distancia media geodésica",             round(dist_media, 3),
+  "Coeficiente clustering global",         round(clustering_global, 4),
+  "Coeficiente clustering local (media)",  round(clustering_local, 4),
+  "Densidad",                              round(edge_density(g_base), 5),
+  "Nodos",                                 vcount(g_base),
+  "Aristas",                               ecount(g_base)
+) |>
+  kable(col.names = c("Métrica estructural", "Valor"),
+        caption = "Auditoría estructural del grafo de co-participación (componente gigante)",
+        align = c("l", "r")) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+
+El coeficiente de clustering indica la probabilidad de que los vecinos de un nodo estén conectados entre sí (triángulos cerrados). Un clustering alto respecto a la densidad sugiere estructura de comunidades bien definidas, por lo que nuestros resultados parecen ser coherentes.
+
+## Detección de Comunidades: Louvain vs Walktrap
+
+A continuación, se comparan dos algoritmos de detección de comunidades: **Louvain**, que maximiza la modularidad mediante fusiones iterativas, y **Walktrap**, que agrupa nodos según la similitud de sus recorridos aleatorios.
+
+```{r}
+#| label: comparacion-algoritmos
+
+set.seed(230205)
+comm_louvain  <- cluster_louvain(g_base)
+comm_walktrap <- cluster_walktrap(g_base, steps = 4)
+
+comparacion_comm <- tribble(
+  ~Algoritmo,    ~Modularidad,                          ~N_comunidades,             ~Comunidad_mayor,
+  "Louvain",     round(modularity(comm_louvain), 4),    length(comm_louvain),       max(sizes(comm_louvain)),
+  "Walktrap",    round(modularity(comm_walktrap), 4),   length(comm_walktrap),      max(sizes(comm_walktrap))
+)
+
+kable(comparacion_comm,
+      col.names = c("Algoritmo", "Modularidad", "Nº comunidades", "Tamaño comunidad mayor"),
+      caption   = "Comparación de algoritmos de detección de comunidades",
+      align     = c("l", "r", "r", "r")) |>
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+  row_spec(which.max(comparacion_comm$Modularidad), bold = TRUE, background = "#f0f4ff")
+```
+
+
+Dados los resultados, se seleccionará **Louvain** por obtener mayor modularidad, lo que indica una partición más estanca de la red. El número de comunidades y su distribución de tamaños revelan la granularidad del ecosistema.
+
+```{r}
+#| label: distribucion-comunidades
+
+sizes_louv <- tibble(
+  algoritmo = "Louvain",
+  tamanio   = as.integer(sizes(comm_louvain))
+)
+sizes_walk <- tibble(
+  algoritmo = "Walktrap",
+  tamanio   = as.integer(sizes(comm_walktrap))
+)
+
+bind_rows(sizes_louv, sizes_walk) |>
+  ggplot(aes(x = tamanio, fill = algoritmo)) +
+  geom_histogram(bins = 30, alpha = 0.8, color = "white", linewidth = 0.2,
+                 position = "identity") +
+  scale_fill_manual(values = c("Louvain" = "#2c5f8a", "Walktrap" = "#b5440e")) +
+  scale_x_log10() +
+  facet_wrap(~algoritmo) +
+  labs(title = "Distribución del tamaño de comunidades",
+       subtitle = "Escala logarítmica — cada barra es un conjunto de comunidades de tamaño similar",
+       x = "Tamaño de comunidad (log)", y = "Frecuencia") +
+  theme_minimal(base_family = "serif") +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold"))
+```
+
+```{r}
+#| label: asignar-comunidad-louvain
+
+g_tidy <- g_tidy |>
+  activate(nodes) |>
+  mutate(community = as.factor(membership(comm_louvain)))
+```
+
+## Visualización del Grafo
+
+```{r}
+#| label: grafo-contraido
+
+membership_df <- tibble(
+  name      = V(g_base)$name,
+  comunidad = as.character(membership(comm_louvain))
+)
+
+aristas_comm <- amazon_aristas |>
+  left_join(membership_df, by = c("from" = "name")) |>
+  rename(comm_from = comunidad) |>
+  left_join(membership_df, by = c("to" = "name")) |>
+  rename(comm_to = comunidad) |>
+  filter(!is.na(comm_from), !is.na(comm_to), comm_from != comm_to) |>
+  mutate(par = map2_chr(comm_from, comm_to, ~ paste(sort(c(.x, .y)), collapse = "_"))) |>
+  group_by(par) |>
+  summarise(from = first(comm_from), to = first(comm_to), weight = sum(peso), .groups = "drop") |>
+  select(from, to, weight)
+
+nodos_comm <- tibble(
+  name    = as.character(seq_len(length(comm_louvain))),
+  n_prods = as.integer(sizes(comm_louvain))
+) |> filter(n_prods > 0)
+
+g_contracted <- graph_from_data_frame(d = aristas_comm, directed = FALSE, vertices = nodos_comm)
+
+n_comms <- vcount(g_contracted)
+paleta_ext <- colorRampPalette(RColorBrewer::brewer.pal(min(n_comms, 12), "Set3"))(n_comms)
+
+g_cont_tidy <- as_tbl_graph(g_contracted) |>
+  activate(nodes) |>
+  filter(!is.na(n_prods))
+
+set.seed(230205)
+ggraph(g_cont_tidy, layout = "kk") +
+  geom_edge_link(aes(width = weight, alpha = weight), color = "gray60", show.legend = FALSE) +
+  geom_node_point(aes(size = n_prods, color = name), alpha = 0.9) +
+  geom_node_text(
+    aes(label = ifelse(n_prods > quantile(n_prods, 0.75),
+                       paste0("C", name, "\n(n=", n_prods, ")"), "")),
+    size = 3, repel = TRUE, fontface = "bold"
+  ) +
+  scale_size_continuous(range = c(3, 20), name = "Productos") +
+  scale_color_manual(values = paleta_ext, guide = "none") +
+  scale_edge_width_continuous(range = c(0.3, 3)) +
+  labs(title = "Grafo contraído por comunidades Louvain",
+       subtitle = "Tamaño: nº productos | Grosor arista: co-participación entre comunidades") +
+  theme_graph(base_family = "serif")
+```
+
+El grafo contraído muestra la estructura macro del ecosistema: cada nodo es una comunidad y las aristas reflejan cuántos pares de productos de comunidades distintas comparten usuarios. Las comunidades más grandes y mejor conectadas representan los nichos de consumo dominantes.
+
+### Visualización del K-Core Principal
+
+```{r}
+#| label: kcore-grafo
+
+kcore_vals   <- coreness(g_base)
+umbral_kcore <- as.integer(quantile(kcore_vals, 0.85))
+g_core       <- induced_subgraph(g_base, which(kcore_vals >= umbral_kcore))
+
+cat("Umbral k-core (percentil 85):", umbral_kcore, "\n")
+cat("Nodos en el k-core:", vcount(g_core), "\n")
+
+comm_lookup <- tibble(name = V(g_base)$name, community = as.factor(membership(comm_louvain)))
+
+g_core_tidy <- as_tbl_graph(g_core) |>
+  activate(nodes) |>
+  mutate(pagerank = centrality_pagerank(), betweenness = centrality_betweenness(normalized = TRUE)) |>
+  left_join(comm_lookup, by = "name") |>
+  mutate(community_plot = fct_lump_n(community, n = 7, other_level = "Otras"))
+
+set.seed(230205)
+ggraph(g_core_tidy, layout = "stress") +
+  geom_edge_link(alpha = 0.08, color = "gray70", linewidth = 0.3) +
+  geom_node_point(aes(color = community_plot, size = pagerank), alpha = 0.8) +
+  scale_size_continuous(range = c(1, 8), name = "PageRank") +
+  scale_color_brewer(palette = "Set3", name = "Comunidad") +
+  labs(title = "Red de co-participación — K-core principal",
+       subtitle = paste0("Top 15% de productos por k-core (≥ ", umbral_kcore, ") | Color: Comunidad Louvain")) +
+  theme_graph(base_family = "serif")
+```
+El k-core de un grafo es el subgrafo maximal en el que todos los nodos tienen grado al menos k. La función coreness() de igraph asigna a cada nodo el mayor valor de k para el que pertenece a un k-core. Filtrar por el percentil 85 de coreness permite retener únicamente el núcleo más integrado de la red, descartando los nodos sin aportar estructura relevante. Esta estrategia es la recomendada para grafos de gran tamaño, donde los algoritmos de layout como Fruchterman-Reingold o stress resultan inviables sobre el grafo completo.
+
+## Perfil de Comunidades
+
+```{r}
+#| label: perfil-comunidades
+
+perfil_comm <- g_tidy |>
+  as_tibble() |>
+  group_by(community) |>
+  summarise(
+    n_productos       = n(),
+    pagerank_medio    = round(mean(pagerank, na.rm = TRUE), 5),
+    score_medio       = round(mean(score_medio, na.rm = TRUE), 3),
+    polaridad_media   = round(mean(polaridad_media, na.rm = TRUE), 3),
+    helpfulness_medio = round(mean(helpfulness_medio, na.rm = TRUE), 3),
+    longitud_media    = round(mean(longitud_media, na.rm = TRUE), 1),
+    .groups = "drop"
+  ) |>
+  arrange(desc(n_productos))
+
+perfil_comm |>
+  kable(
+    col.names = c("Comunidad", "Productos", "PageRank medio",
+                  "Score medio", "Polaridad media",
+                  "Helpfulness medio", "Longitud media reseña"),
+    caption = "Perfil estadístico de las comunidades Louvain"
+  ) |>
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                full_width = TRUE) |>
+  column_spec(3, bold = TRUE) |>
+  column_spec(4, color = "#2a7a2a")
+```
+
+```{r}
+#| label: boxplot-comunidades
+
+comms_relevantes <- perfil_comm |>
+  filter(n_productos >= 20) |>
+  pull(community)
+
+g_tidy |>
+  as_tibble() |>
+  filter(community %in% comms_relevantes) |>
+  select(community, score_medio, polaridad_media,
+         helpfulness_medio, longitud_media) |>
+  pivot_longer(-community, names_to = "variable", values_to = "valor") |>
+  ggplot(aes(x = fct_reorder(community, valor, .fun = median),
+             y = valor, fill = community)) +
+  geom_boxplot(alpha = 0.7, outlier.size = 0.8, show.legend = FALSE) +
+  facet_wrap(~variable, scales = "free_y",
+             labeller = labeller(variable = c(
+               score_medio       = "Score medio",
+               polaridad_media   = "Polaridad media",
+               helpfulness_medio = "Helpfulness",
+               longitud_media    = "Longitud reseña"
+             ))) +
+  labs(
+    title    = "Variabilidad interna de las comunidades Louvain",
+    subtitle = "Comunidades con ≥ 20 productos — las medias son similares, pero la dispersión revela diferencias",
+    x        = "Comunidad",
+    y        = NULL
+  ) +
+  theme_minimal(base_family = "serif") +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+Los perfiles muestran que, aunque las medias entre comunidades pueden ser similares, la dispersión interna varía. Esto sugiere que las comunidades Louvain agrupan productos por hábitos de consumo compartidos (qué usuarios los reseñan), no necesariamente por similitud en sus atributos de valoración, lo cual se discutirá en mayor profundidad en la conclusión.
+
+## Exportación de Resultados
+
+```{r}
+#| label: exportar-sna
+
+centralidad_export <- g_tidy |>
+  as_tibble() |>
+  select(ProductId = name, degree, betweenness, pagerank,
+         closeness, coreness, community)
+
+write_rds(centralidad_export, "sna_centralidades.rds")
+write_rds(perfil_comm, "sna_perfil_comunidades.rds")
+write_rds(g_tidy, "g_tidy.rds")
+```
