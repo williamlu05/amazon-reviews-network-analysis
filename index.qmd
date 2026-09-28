@@ -15,7 +15,7 @@ El marco metodológico de esta investigación se despliega de forma progresiva a
 
 1.  **Reducción de la Dimensionalidad y Caracterización Estructural (Bloque I):** Condensar el espacio multivariante de las métricas de los productos mediante el Análisis de Componentes Principales, aislando los factores que diferencian a los productos de consumo masivo de los artículos de nicho o premium.
 2.  **Modelización de la Topología de Influencia (Bloque II):** Construir y analizar el grafo de relaciones de coparticipación mediante el Análisis de Redes Sociales, identificando comunidades latentes de productos y nodos estructuralmente críticos mediante métricas de centralidad algorítmica.
-3.  **Clasificación Basada en Enlaces y Computación Predictiva (Bloque III):** Implementar modelos de aprendizaje supervisado que aprovechen tanto los atributos intrínsecos del producto como su posición relacional en la red para predecir propiedades críticas del ecosistema.
+3.  **Clasificación Basada en Enlaces y Computación Predictiva (Bloque III):** Explotar la posición relacional de cada producto en la red para inferir su perfil (clasificación por homofilia) y anticipar conexiones latentes entre productos (predicción de enlaces).
 
 ## Estructura del Dataset
 
@@ -25,13 +25,16 @@ El núcleo empírico del estudio se sustenta sobre variables nativas del dataset
 -   **Utilidad Percibida (`Helpfulness`):** Ratio derivado matemáticamente entre los votos positivos recibidos por una reseña y el total de interacciones sobre la misma, aislando el sesgo de utilidad.
 -   **Persistencia Temporal (`Lifespan`):** Rango de días transcurridos entre la primera y la última reseña registrada para un producto, mapeando su ciclo de vida activo.
 -   **Complejidad del Consumidor (`Text Length`):** Longitud promedio en caracteres de los textos de las reseñas, asociada en la literatura con la implicación cognitiva del comprador.
+-   **Polaridad del Texto (AFINN):** Puntuación media de sentimiento del texto de las reseñas y su desviación típica, que resumen el tono de las opiniones sin recurrir a modelos de lenguaje pesados.
 -   **Incertidumbre e Información (Entropía de Shannon):** Aplicación de la medida de entropía informacional sobre la distribución de las calificaciones para cuantificar el grado de consenso o polarización de la comunidad en torno a un producto.
 
 ## Mapa de Navegación del Libro
 
 Este documento interactivo ha sido estructurado como un libro de Quarto para facilitar una lectura modular y reproducible. A través de la barra de navegación lateral, el lector puede acceder a las siguientes secciones dinámicas:
 
+-   **Preprocesado de Datos:** Muestreo del dataset, cálculo de las métricas por producto y construcción de las aristas del grafo de co-participación.
 -   **Bloque I: Análisis de Componentes Principales:** Estudio de la idoneidad muestral (KMO y Bartlett), ejecución del PCA, criterios de retención de varianza (Kaiser y *Elbow Method*) e interpretación analítica de los componentes.
 -   **Bloque II: Análisis de Redes Sociales:** Extracción del grafo de productos, cálculo de centralidades (Grado, Interintermediación, PageRank) y detección de comunidades mediante particionado algorítmico.
--   **Bloque III: Clasificación Basada en Enlaces:** Diseño, entrenamiento y evaluación métrica de los clasificadores predictivos combinando atributos geométricos y topológicos.
+-   **Bloque III: Clasificación Basada en Enlaces:** Medición de la homofilia de los clusters PCA sobre el grafo, clasificador por voto mayoritario de vecinos y predicción de enlaces (Common Neighbors, Jaccard, Adamic-Adar) evaluada mediante AUC-ROC.
+-   **Conclusiones:** Validación cruzada de los tres bloques (ARI, Kruskal-Wallis) y síntesis de resultados.
 -   **Anexo: Diario de Interacción con IA:** Documentación crítica y transparente del proceso de co-creación, depuración de código y mitigación de alucinaciones algorítmicas con modelos de lenguaje.
