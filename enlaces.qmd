@@ -144,10 +144,11 @@ write_rds(list(accuracy_modelo = accuracy_modelo, accuracy_baseline = accuracy_b
 
 La **predicción de enlaces** estima qué pares de nodos no conectados tienen mayor probabilidad de estarlo. En este contexto, un enlace predicho indica que dos productos comparten una base de usuarios suficientemente similar como para constituir una co-compra latente.
 
-Los scores evaluados son: 
+Los scores evaluados son:
+
 1. **Common Neighbors**: vecinos compartidos.
-2. **Jaccard**:CN normalizado por la unión de vecindades
-**Adamic-Adar**: pondera inversamente por el logaritmo del grado de los vecinos comunes, dando más peso a vecinos selectivos.
+2. **Jaccard**: CN normalizado por la unión de vecindades.
+3. **Adamic-Adar**: pondera inversamente por el logaritmo del grado de los vecinos comunes, dando más peso a vecinos selectivos.
 
 ### Partición de aristas y generación de negativos
 
