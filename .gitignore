@@ -1,0 +1,16 @@
+# RStudio / R session
+.Rproj.user
+.Rhistory
+.RData
+.RDataTmp
+.Ruserdata
+
+# Quarto
+/.quarto/
+**/*.quarto_ipynb
+/_book/
+/*_files/
+
+# Raw data (download from Kaggle, see README) and generated intermediates
+Reviews.csv
+*.rds
